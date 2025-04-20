@@ -122,3 +122,23 @@ sudo systemctl restart apache2
 # Clean Up
 sudo rm -rf /tmp/webfiles
 
+
+---
+
+## 📸 Deployment Results
+
+Below are screenshots showing the successful deployment of the web application to an EC2 instance using Jenkins.
+
+### ✅ Jenkins Pipeline Success
+
+This shows the `ec2-instance` Jenkins pipeline running two stages: `fetch code` and `deploy to EC2`. All stages completed successfully.
+
+![Jenkins Pipeline Success](./images/jenkins-stages.png)
+
+---
+
+### 🌐 Deployed Web Application on EC2
+
+This screenshot shows the live website (`Clean Work`) running on the EC2 instance at `http://54.164.217.241`.
+
+![Deployed Site](./images/running-site.png)
