@@ -1,0 +1,92 @@
+pipeline {
+    agent {
+        label 'node-ec-1'  // Specify the node to run the pipeline
+    }
+
+    environment {
+        INSTANCE_ID = 'i-03cc6d0c4b19f13ba'  // Your EC2 instance ID
+        AWS_REGION = 'us-east-1'  // Your region
+        S3_BUCKET = 'jenkins-ec2-ssm-buk'  // Your S3 bucket name
+    }
+
+    stages {
+        stage('deploy to EC2 via SSM') {
+            steps {
+                withAWS(region: "${AWS_REGION}") {
+                    script {
+                        // Check identity before withAWS block (should use jenkinscicd-role)
+                        sh "aws sts get-caller-identity --output text"
+
+                        echo "Deploying websetup.sh to EC2 via SSM"
+                        // Step 1: Upload websetup.sh to S3 (fail if the command fails)
+                        sh """
+                            set -e
+                            aws s3 cp websetup.sh s3://${S3_BUCKET}/websetup.sh
+                        """
+
+                        // Step 2: Send the SSM command and capture the command ID
+                        def commandOutput = sh(script: """
+                            set -e
+                            aws ssm send-command \
+                                --instance-ids ${INSTANCE_ID} \
+                                --document-name 'AWS-RunShellScript' \
+                                --parameters 'commands=["aws s3 cp s3://${S3_BUCKET}/websetup.sh /home/ubuntu/websetup.sh","chmod +x /home/ubuntu/websetup.sh","bash /home/ubuntu/websetup.sh"]' \
+                                --cloud-watch-output-config 'CloudWatchOutputEnabled=true,CloudWatchLogGroupName=SSMCommandLogs' \
+                                --output json
+                        """, returnStdout: true).trim()
+
+                        // Pretty-print the JSON output and write to a file
+                        def commandJson = readJSON text: commandOutput
+                        def prettyCommandOutput = groovy.json.JsonOutput.prettyPrint(commandOutput)
+                        writeFile file: 'ssm-send-command-output.json', text: prettyCommandOutput
+
+                        // Extract the command ID
+                        def commandId = commandJson.Command.CommandId
+                        echo "SSM Command ID: ${commandId}"
+
+                        // Step 3: Wait for the command to complete (timeout after 300 seconds)
+                        sh """
+                            set -e
+                            aws ssm wait command-executed \
+                                --command-id ${commandId} \
+                                --instance-id ${INSTANCE_ID} \
+                                --region ${AWS_REGION}
+                        """
+
+                        // Step 4: Get the command invocation details to check the status
+                        def invocationOutput = sh(script: """
+                            aws ssm get-command-invocation \
+                                --command-id ${commandId} \
+                                --instance-id ${INSTANCE_ID} \
+                                --region ${AWS_REGION} \
+                                --output json
+                        """, returnStdout: true).trim()
+
+                        // Pretty-print the invocation JSON output and write to a file
+                        def invocationJson = readJSON text: invocationOutput
+                        def prettyInvocationOutput = groovy.json.JsonOutput.prettyPrint(invocationOutput)
+                        writeFile file: 'ssm-command-invocation-output.json', text: prettyInvocationOutput
+
+                        // Parse the invocation details
+                        def status = invocationJson.Status
+                        echo "SSM Command Status: ${status}"
+
+                        // Step 5: Check the status and fail if the command failed
+                        if (status != 'Success') {
+                            echo "SSM Command Output (Standard Output): ${invocationJson.StandardOutputContent}"
+                            echo "SSM Command Output (Standard Error): ${invocationJson.StandardErrorContent}"
+                            error "SSM Command failed with status: ${status}"
+                        } else {
+                            echo "SSM Command succeeded!"
+                            echo "SSM Command Output (Standard Output): ${invocationJson.StandardOutputContent}"
+                            echo "SSM Command Output (Standard Error): ${invocationJson.StandardErrorContent}"
+                        }
+
+                        // Step 6: Archive the JSON files as artifacts
+                        archiveArtifacts artifacts: 'ssm-send-command-output.json,ssm-command-invocation-output.json', fingerprint: true
+                    }
+                }
+            }
+        }
+    }
+} 
